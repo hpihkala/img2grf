@@ -1,17 +1,13 @@
 package org.orphanware;
 
-import com.sun.org.apache.bcel.internal.util.ByteSequence;
 import java.awt.image.BufferedImage;
-import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
-import java.util.logging.Level;
-import java.util.logging.Logger;
+
 import javax.imageio.ImageIO;
+
 import org.apache.commons.codec.binary.Hex;
 
 /**
@@ -20,6 +16,13 @@ import org.apache.commons.codec.binary.Hex;
  */
 public class App {
 
+	private static byte[] bitMask = new byte[8];
+	static {
+		bitMask[7] = 1;
+		for (int i=0;i<7;i++)
+			bitMask[6-i] = (byte) (bitMask[7] << (i+1));
+	}
+	
 	public static void main(String[] args) {
 
 
@@ -84,7 +87,7 @@ public class App {
 
 		if (filePath != null) {
 
-			convertBMP(filePath, withLB, invertPixels, outputFileName);
+			convertImage(filePath, withLB, invertPixels, outputFileName);
 			System.exit(0);
 
 		}
@@ -93,83 +96,70 @@ public class App {
 
 	}
 
-	public static void convertBMP(String filePath, Boolean withLB, 
+	public static void convertImage(String filePath, Boolean withLB, 
 				       Boolean invertPixels, String outputFileName) {
 
-		FileInputStream fis;
 		try {
-			fis = new FileInputStream(filePath);
 			BufferedImage img = ImageIO.read(new File(filePath));
-			int h = img.getHeight();
-			int w = img.getWidth();
-			byte[] origBytes = readFully(fis);
-			System.out.println("height: " + h + " width: " + w + " total byte length: " + origBytes.length);
-
-			int pixeloffset = origBytes[10] + origBytes[11] + origBytes[12] + origBytes[13];
-			if (pixeloffset == 62) {
-
-				System.out.println("pixel offset: " + pixeloffset);
-
-			} else {
-
-				System.out.println("pixel offset (WARNING! NOT THE DEFAULT OF 62): " + pixeloffset);
-
-			}
-
-
-
-			byte[] withoutHeaderBytes = new byte[origBytes.length - pixeloffset];
-
-			int newByteIndex = 0;
-			int byteW =  (int) Math.ceil(((double)w) / 8);
+			int imgHeight = img.getHeight();
+			int imgWidth = img.getWidth();
 			
-			for (int i = origBytes.length-1; i >= pixeloffset; i--) {
+			System.out.println("Height: " + imgHeight + ", Width: " + imgWidth);
 
-				int tmp = i - (byteW-1);
-				
-				for( int j = tmp; j < tmp + byteW; j++ ) {
+			// Each pixel is one bit
+			int rowWidthBytes = (int) Math.ceil(((double)imgWidth) / 8);
+			
+			System.out.println("Row width will be "+rowWidthBytes+" bytes.");
+			
+			byte[] imageBytes = new byte[imgHeight * rowWidthBytes];
 
-					withoutHeaderBytes[newByteIndex++] = origBytes[j];
-
+			for (int y=0; y<imgHeight; y++) {
+				for (int x=0; x<imgWidth; x++) {
+					boolean bit = getPixel(img,x,y);
+					if (bit)
+						setPixel(imageBytes,x,y,rowWidthBytes);
 				}
-				i = tmp;
 			}
 
 			if ( invertPixels ) {
+				// Set the width "leftover" bits on last byte of each row to 1
+				for (int y=0;y<imgHeight;y++) {
+					for (int x=imgWidth;x<rowWidthBytes*8;x++) {
+						setPixel(imageBytes,x,y,rowWidthBytes);
+					}
+				}
 				
-				System.out.println("pixels inverted!");
-				for (int i = 0; i < withoutHeaderBytes.length; i++) {
-					withoutHeaderBytes[i] ^= 0xFF;
+				System.out.println("Pixels inverted!");
+				for (int i = 0; i < imageBytes.length; i++) {
+					imageBytes[i] ^= 0xFF;
 				}
 			}
 
-			String byteAsString = Hex.encodeHexString(withoutHeaderBytes);
+			String byteAsString = Hex.encodeHexString(imageBytes);
 
 			if (withLB) {
 				
 				char[] bytesAsCharArr = byteAsString.toCharArray();
+				
+				// Every byte represented by two characters in hex 
+				int lineBreakCount = rowWidthBytes*2;
 
-				int lineBreakCount = (int) Math.ceil(((double)w) / 4);
-
-				System.out.println("Adding line break every: " + lineBreakCount + " bytes");
-				StringBuilder lineBreakedStr = new StringBuilder();
+				System.out.println("Adding line break every: " + lineBreakCount + " characters");
+				StringBuilder lineBrokenStr = new StringBuilder();
 				for (int i = 0; i < bytesAsCharArr.length; i++) {
 
 					if (i % lineBreakCount == 0) {
-
-						lineBreakedStr.append("\n");
+						lineBrokenStr.append("\n");
 					}
 
-					lineBreakedStr.append(bytesAsCharArr[i]);
-
+					lineBrokenStr.append(bytesAsCharArr[i]);
 				}
 
-				byteAsString = lineBreakedStr.toString();
+				byteAsString = lineBrokenStr.toString();
 			}
 
-			int wInBytes = (int) Math.ceil(((double)w) / 8);
-			String imageTemplate = "~DG" + outputFileName + "," + withoutHeaderBytes.length;
-			imageTemplate       += "," + wInBytes + "," + byteAsString;
+			String imageTemplate = "~DG" + outputFileName + "," + imageBytes.length;
+			imageTemplate       += "," + rowWidthBytes + "," + byteAsString;
 			FileOutputStream fos = new FileOutputStream(outputFileName + ".grf");
 			fos.write(imageTemplate.getBytes());
 			fos.close();
@@ -186,20 +176,29 @@ public class App {
 		}
 	}
 
-	public static byte[] readFully(InputStream stream) throws IOException {
-		byte[] buffer = new byte[8192];
-		ByteArrayOutputStream baos = new ByteArrayOutputStream();
-
-		int bytesRead;
-		while ((bytesRead = stream.read(buffer)) != -1) {
-			baos.write(buffer, 0, bytesRead);
-		}
-		return baos.toByteArray();
+	private static boolean getPixel(BufferedImage img, int x, int y) {
+		int rgb = img.getRGB(x, y);
+		
+		// From http://stackoverflow.com/questions/4801366/convert-rgb-values-into-integer-pixel
+		int r = (rgb>>16)&0x0ff;
+		int g = (rgb>>8) &0x0ff;
+		int b = (rgb)    &0x0ff;
+		
+		int grayscale = (r+g+b)/3;
+		return grayscale >= 127;
 	}
 
+	private static void setPixel(byte[] imageBytes, int x, int y, int rowWidthBytes) {
+		int bit = x%8;
+		int byteIdx = y*rowWidthBytes + x/8;
+		imageBytes[byteIdx] |= bitMask[bit];
+	}
+	
+	
+	
 	public static void printHelp() {
 
-		System.out.println("\nZebra BMP to GRF encoder.");
+		System.out.println("\nImage to Zebra GRF encoder.");
 		System.out.println("Written by Arash Sharif");
 		System.out.println("Released under MIT license @ http://opensource.org/licenses/MIT");
 		System.out.println("-----------------------------------------------------------------------------------------");
@@ -207,7 +206,7 @@ public class App {
 		System.out.println("-----------------------------------------------------------------------------------------");
 		System.out.println("switches:\n");
 		System.out.println("required:");
-		System.out.println("-f \t-must be followed with path to the bmp image you want to encode");
+		System.out.println("-f \t-must be followed with path to the image you want to encode");
 		System.out.println("optional:");
 		System.out.println("-lb\t-tells encoder to insert line break at widths.  helps reading eye with naked eye.");
 		System.out.println("-i \t-tells encoder to invert pixels");
@@ -215,5 +214,8 @@ public class App {
 		System.out.println("-----------------------------------------------------------------------------------------");
 		System.out.println("Source found @ https://github.com/asharif/img2grf");
 		System.out.println("-----------------------------------------------------------------------------------------");
+		System.out.println("Supported image file formats on this platform:");
+		for (String name : ImageIO.getReaderFormatNames())
+			System.out.println(name);
 	}
 }
