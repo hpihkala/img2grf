@@ -10,10 +10,6 @@ import javax.imageio.ImageIO;
 
 import org.apache.commons.codec.binary.Hex;
 
-/**
- * Hello world!
- *
- */
 public class App {
 
 	private static byte[] bitMask = new byte[8];
